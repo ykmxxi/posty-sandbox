@@ -1,4 +1,6 @@
 -- 기존 테이블 삭제 (있는 경우)
+DROP TABLE IF EXISTS `post`;
+DROP TABLE IF EXISTS `user`;
 DROP TABLE IF EXISTS `space_photo`;
 DROP TABLE IF EXISTS `product_photo`;
 DROP TABLE IF EXISTS `guest_book_card_photo`;
@@ -9,6 +11,22 @@ DROP TABLE IF EXISTS `space_host_map`;
 DROP TABLE IF EXISTS `space`;
 DROP TABLE IF EXISTS `host`;
 DROP TABLE IF EXISTS `guest`;
+
+CREATE TABLE `user`
+(
+    `id`       BIGINT       NOT NULL AUTO_INCREMENT,
+    `username` VARCHAR(255) NOT NULL,
+    `email`    VARCHAR(255) NOT NULL,
+    PRIMARY KEY (`id`)
+);
+
+CREATE TABLE `post`
+(
+    `id`        BIGINT NOT NULL AUTO_INCREMENT,
+    `content`   TEXT   NOT NULL,
+    `author_id` BIGINT NOT NULL,
+    PRIMARY KEY (`id`)
+);
 
 CREATE TABLE `guest`
 (
@@ -127,6 +145,9 @@ CREATE TABLE `space_photo`
 );
 
 -- Foreign Key Constraints
+ALTER TABLE `post`
+    ADD CONSTRAINT `FK_user_TO_post` FOREIGN KEY (`author_id`) REFERENCES `user` (`id`);
+
 ALTER TABLE `space_host_map`
     ADD CONSTRAINT `FK_space_TO_space_host_map` FOREIGN KEY (`space_id`) REFERENCES `space` (`id`);
 
