@@ -1,10 +1,15 @@
 package posty.jpa.domain;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
 import lombok.AccessLevel;
 import lombok.Getter;
@@ -27,6 +32,9 @@ public class Host extends BaseTimeEntity {
 
     @Column(name = "agreed_terms", nullable = false)
     private Boolean agreedTerms = false;
+
+    @OneToMany(mappedBy = "host", fetch = FetchType.LAZY)
+    private List<SpaceHostMap> spaceHostMaps = new ArrayList<>();
 
     public Host(String name, String pictureUrl, Boolean agreedTerms) {
         this.name = name;
