@@ -19,6 +19,11 @@ subprojects {
                 "runtimeOnly"("com.mysql:mysql-connector-j")
                 "implementation"("com.github.gavlyukovskiy:p6spy-spring-boot-starter:1.9.2")
 
+                "compileOnly"("org.projectlombok:lombok")
+                "annotationProcessor"("org.projectlombok:lombok")
+                "testCompileOnly"("org.projectlombok:lombok")
+                "testAnnotationProcessor"("org.projectlombok:lombok")
+
                 "testImplementation"("org.springframework.boot:spring-boot-starter-test")
                 "testImplementation"("org.springframework.boot:spring-boot-testcontainers")
                 "testImplementation"("org.testcontainers:mysql:1.20.4")
