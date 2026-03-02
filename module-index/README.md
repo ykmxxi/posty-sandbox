@@ -39,13 +39,13 @@
 
 ### Step 2: EXPLAIN 읽는 법 익히기
 
-- [ ] 테스트 데이터 준비: Coupon 100만 건, Fruit 50만 건 삽입
-- [ ] `EXPLAIN`의 핵심 컬럼 이해
+- [x] 테스트 데이터 준비: Coupon 100만 건, Fruit 50만 건 삽입
+- [x] `EXPLAIN`의 핵심 컬럼 이해
   - `type` 컬럼 (접근 방식): `const` > `eq_ref` > `ref` > `range` > `index` > `ALL`
   - `key`: 실제 사용된 인덱스
   - `rows`: 스캔 예상 행 수 (실제와 다를 수 있음 — 통계 기반 추정)
   - `Extra`: `Using index`(커버링), `Using where`(서버 필터링), `Using filesort`, `Using temporary`
-- [ ] `EXPLAIN ANALYZE`로 실제 실행 시간까지 확인
+- [x] `EXPLAIN ANALYZE`로 실제 실행 시간까지 확인
 
 ```sql
 -- 실습: 같은 쿼리를 인덱스 유무로 비교
@@ -60,11 +60,11 @@ EXPLAIN ANALYZE SELECT * FROM coupon WHERE issue_started_at < '2024-01-01';
 
 ### Step 3: 단일 컬럼 인덱스 실험
 
-- [ ] PK 조회 vs Secondary Index 조회 성능 비교
+- [x] PK 조회 vs Secondary Index 조회 성능 비교
   - `WHERE id = ?` (const) vs `WHERE issue_started_at = ?` (ref)
-- [ ] 범위 조건에서 옵티마이저의 판단
+- [x] 범위 조건에서 옵티마이저의 판단
   - `WHERE id < 10005` vs `WHERE id >= 999000` — 조회 범위 비율에 따라 인덱스 사용 여부가 달라진다
-- [ ] **인덱스가 무효화되는 케이스** 직접 확인
+- [x] **인덱스가 무효화되는 케이스** 직접 확인
   - `WHERE SUBSTRING(name, 1, 1) = 'a'` → 함수 적용 시 인덱스 사용 불가
   - `WHERE name LIKE '%apple'` → 선행 와일드카드
   - `WHERE status != 'EXPIRED'` → NOT 조건
