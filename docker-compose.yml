@@ -6,7 +6,8 @@ services:
     platform: linux/arm64
     container_name: posty-sandbox
     environment:
-      MYSQL_ROOT_PASSWORD: password
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: posty
     ports:
       - "3306:3306"
     volumes:

@@ -8,7 +8,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-CONTAINER="posty-mysql"
+CONTAINER="posty-sandbox"
 DB_USER="root"
 DB_PASS="root"
 DB_NAME="posty"
