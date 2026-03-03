@@ -75,7 +75,7 @@ EXPLAIN ANALYZE SELECT * FROM coupon WHERE issue_started_at < '2024-01-01';
 
 ### Step 4: 복합 인덱스 (Composite Index)
 
-- [ ] 복합 인덱스의 "최좌선 접두사(Leftmost Prefix)" 규칙 실험
+- [x] 복합 인덱스의 "최좌선 접두사(Leftmost Prefix)" 규칙 실험
 
 ```sql
 CREATE INDEX idx_status_started ON coupon (status, issue_started_at);
@@ -88,11 +88,11 @@ EXPLAIN SELECT * FROM coupon WHERE status = 'ACTIVE' AND issue_started_at > '202
 EXPLAIN SELECT * FROM coupon WHERE issue_started_at > '2024-01-01';
 ```
 
-- [ ] **컬럼 순서 결정 기준** 이해
+- [x] **컬럼 순서 결정 기준** 이해
   - 등호(=) 조건 컬럼을 앞에, 범위(>, <, BETWEEN) 조건 컬럼을 뒤에
   - 카디널리티가 높은 컬럼을 앞에 두는 게 일반적이지만, **쿼리 패턴**이 더 중요하다
   - 예: status(카디널리티 3)가 앞이고 issue_started_at(카디널리티 높음)이 뒤인 게 맞는 이유
-- [ ] 카디널리티 확인 방법
+- [x] 카디널리티 확인 방법
 
 ```sql
 SHOW INDEX FROM coupon;  -- Cardinality 컬럼 확인
@@ -101,8 +101,8 @@ SELECT COUNT(DISTINCT status), COUNT(DISTINCT issue_started_at) FROM coupon;
 
 ### Step 5: 커버링 인덱스
 
-- [ ] 커버링 인덱스의 원리: SELECT하는 모든 컬럼이 인덱스에 포함되면 Clustered Index를 탐색할 필요가 없다
-- [ ] 실습 비교:
+- [x] 커버링 인덱스의 원리: SELECT하는 모든 컬럼이 인덱스에 포함되면 Clustered Index를 탐색할 필요가 없다
+- [x] 실습 비교:
 
 ```sql
 -- 커버링 인덱스 (Extra: Using index)
@@ -112,8 +112,8 @@ EXPLAIN SELECT name FROM fruit WHERE name LIKE 'ap%';
 EXPLAIN SELECT * FROM fruit WHERE name LIKE 'ap%';
 ```
 
-- [ ] 실행 시간 차이 측정: 50만 건 기준으로 얼마나 차이나는지 `EXPLAIN ANALYZE`로 확인
-- [ ] 실무에서의 트레이드오프: 커버링 인덱스를 위해 인덱스에 컬럼을 추가하면 쓰기 성능이 저하된다
+- [x] 실행 시간 차이 측정: 50만 건 기준으로 얼마나 차이나는지 `EXPLAIN ANALYZE`로 확인
+- [x] 실무에서의 트레이드오프: 커버링 인덱스를 위해 인덱스에 컬럼을 추가하면 쓰기 성능이 저하된다
 
 ### Step 6: 심화 — 옵티마이저 동작
 
