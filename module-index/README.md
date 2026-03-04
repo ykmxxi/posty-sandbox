@@ -117,9 +117,9 @@ EXPLAIN SELECT * FROM fruit WHERE name LIKE 'ap%';
 
 ### Step 6: 심화 — 옵티마이저 동작
 
-- [ ] 인덱스 힌트 (`USE INDEX`, `FORCE INDEX`, `IGNORE INDEX`) 실험
-- [ ] `ANALYZE TABLE`로 통계 갱신 후 실행 계획 변화 관찰
-- [ ] Adaptive Hash Index: `SHOW ENGINE INNODB STATUS`에서 hash searches/s 확인
+- [x] 인덱스 힌트 (`USE INDEX`, `FORCE INDEX`, `IGNORE INDEX`) 실험
+- [x] `ANALYZE TABLE`로 통계 갱신 후 실행 계획 변화 관찰
+- [x] Adaptive Hash Index: `SHOW ENGINE INNODB STATUS`에서 hash searches/s 확인
 
 ---
 
