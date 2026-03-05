@@ -37,11 +37,55 @@ INSERT INTO test_myisam VALUES (1), (2), (3), (3), (4);  -- 에러 발생
 SELECT * FROM test_myisam;  -- 결과: 1, 2, 3 (부분 삽입!)
 ```
 
-- [ ] 이 차이가 발생하는 이유: InnoDB는 undo log를 통한 롤백을 지원하지만, MyISAM은 트랜잭션을 지원하지 않는다
-- [ ] **autocommit과 암묵적 트랜잭션**: MySQL의 `autocommit=1`(기본값) 상태에서 각 SQL문이 암묵적 트랜잭션으로 감싸지는 동작 이해
-- [ ] **내구성(Durability)**: WAL(Write-Ahead Logging) 원칙 — 데이터 페이지에 쓰기 전에 redo log에 먼저 기록하는 이유 (순차 I/O vs 랜덤 I/O)
-- [ ] `innodb_flush_log_at_trx_commit` 설정값(0, 1, 2)에 따른 redo log flush 전략: `write()` vs `fsync()` 구분, MySQL 크래시 vs OS 크래시 안전성 차이
-- [ ] **undo log vs redo log 역할 구분**: undo log는 롤백(원자성) + MVCC 읽기용, redo log는 크래시 복구(내구성)용
+- [x] 이 차이가 발생하는 이유: InnoDB는 undo log를 통한 롤백을 지원하지만, MyISAM은 트랜잭션을 지원하지 않는다
+
+> InnoDB는 각 DML(INSERT/UPDATE/DELETE) 수행 직전에 해당 행의 변경 전 데이터를 undo log에 기록한다. ROLLBACK 시 이 undo log를 역순으로 적용하여 변경을 되돌린다.
+> "트랜잭션 시작 시점의 전체 스냅샷을 뜬다"는 것이 아니라, **변경이 일어나는 순간마다 개별적으로** 기록한다.
+>
+> undo log 타입 구분:
+> - **insert undo log**: INSERT의 역연산(해당 행 DELETE) 기록. 해당 트랜잭션의 롤백에만 필요하므로 커밋 즉시 purge 가능
+> - **update undo log**: UPDATE/DELETE의 역연산(이전 컨럼값) 기록. **MVCC 읽기에도 사용**되므로, 해당 undo log를 참조하는 Read View가 모두 사라질 때까지 purge할 수 없음
+
+- [x] **autocommit과 암묵적 트랜잭션**: MySQL의 `autocommit=1`(기본값) 상태에서 각 SQL문이 암묵적 트랜잭션으로 감싸지는 동작 이해
+
+> **왜 MySQL은 autocommit=1을 기본값으로 가져가는가?**
+>
+> **긴 트랜잭션 사고 방지**: `autocommit=0`이 기본이면, 개발자가 `BEGIN`은 했는데 `COMMIT`/`ROLLBACK`을 빠뜨리는 실수가 발생할 수 있다. 이 경우 트랜잭션이 열린 채로 커넥션이 유지되어 락 점유, undo log 비대화, 커넥션 풀 고갈이 발생한다. `autocommit=1`이면 명시적 `BEGIN` 없이는 각 SQL이 즉시 커밋되므로 이런 사고를 구조적으로 방지한다.
+>
+> **단순성**: 대부분의 단일 쿼리 작업(단순 SELECT, 단건 INSERT 등)은 별도의 트랜잭션 경계가 필요 없다. 여러 SQL을 하나의 원자적 단위로 묶어야 할 때만 명시적 `BEGIN`~`COMMIT`을 쓰는 것이 더 안전한 설계다.
+>
+> 참고: PostgreSQL도 autocommit이 기본이지만, 클라이언트 드라이버 레벨에서 처리하는 반면 MySQL은 서버 레벨 설정이라는 차이가 있다.
+
+- [x] **내구성(Durability)**: WAL(Write-Ahead Logging) 원칙 — 데이터 페이지에 쓰기 전에 redo log에 먼저 기록하는 이유 (순차 I/O vs 랜덤 I/O)
+
+> MySQL은 WAL 원칙을 따른다. 데이터 페이지를 직접 디스크에 쓰지 않고, 먼저 redo log에 변경 내용을 기록한 뒤 커밋을 완료한다. 실제 데이터 페이지 반영은 나중에 비동기로 처리한다.
+>
+> **redo log가 순차 I/O인 이유**: redo log는 **append-only 구조의 순환 파일**이다. 항상 끝에 이어서 쓰기만 하므로 디스크 헤드가 한 방향으로만 이동한다. 반면 데이터 페이지 쓰기는 수정 대상 페이지가 디스크 여기저기에 흩어져 있으므로 랜덤 I/O가 발생한다.
+>
+> **세컨더리 인덱스와의 관계**: 하나의 UPDATE가 클러스터드 인덱스 페이지 + 세컨더리 인덱스 페이지(여러 개일 수 있음) 등 **여러 페이지에 걸쳐 랜덤 I/O**를 발생시킨다. WAL로는 이 모든 변경을 redo log 한 곳에 순차적으로 기록하고, 실제 페이지 반영은 나중에 모아서 한다. InnoDB는 세커더리 인덱스 변경을 **Change Buffer**에 버퍼링하여 랜덤 I/O를 추가로 줄이기도 한다.
+>
+> **dirty page와 checkpoint**: 버퍼 풀에서 변경되었지만 아직 디스크에 반영되지 않은 페이지를 dirty page라 한다. InnoDB는 백그라운드에서 주기적으로 dirty page를 디스크에 flush하는데 이 과정을 checkpoint라 한다. checkpoint가 완료된 redo log 영역은 재사용할 수 있다.
+
+- [x] `innodb_flush_log_at_trx_commit` 설정값(0, 1, 2)에 따른 redo log flush 전략: `write()` vs `fsync()` 구분, MySQL 크래시 vs OS 크래시 안전성 차이
+
+> `write()`와 `fsync()`는 다른 연산이다. `write()`는 프로세스 메모리(log buffer)에서 OS의 page cache로 복사하는 것이고, `fsync()`는 page cache의 내용을 실제 디스크 플래터에 기록하도록 OS에 요청하는 것이다.
+>
+> - **값 1** (기본값): 매 커밋마다 `write()` + `fsync()`. 디스크까지 도달하므로 MySQL 크래시든 OS 크래시든 안전. **ACID-D를 완전히 보장하는 유일한 설정.**
+> - **값 2**: 매 커밋마다 `write()`는 하지만 `fsync()`는 1초마다. OS page cache까지는 도달하므로 MySQL 프로세스가 죽어도 OS가 살아있으면 안전. **OS 크래시(커널 패닉, 정전 등) 시 최대 1초 유실.**
+> - **값 0**: `write()`도 `fsync()`도 1초마다. 커밋 시 아무 I/O도 하지 않음. **MySQL 프로세스 크래시에도 최대 1초 유실 가능.**
+>
+> 실무 적용: 데이터 유실이 허용되지 않는 서비스(금융, 결제 등)는 반드시 1, 로그성 데이터나 대량 배치 처리에서는 성능을 위해 2를 사용하는 경우도 있다.
+
+- [x] **undo log vs redo log 역할 구분**: undo log는 롤백(원자성) + MVCC 읽기용, redo log는 크래시 복구(내구성)용
+
+> | 구분 | undo log | redo log |
+> |------|----------|----------|
+> | 목적 | 트랜잭션 롤백(원자성) + MVCC 스냅샷 읽기(격리성) | 크래시 복구(내구성) |
+> | 기록 시점 | 각 DML 수행 직전 | 데이터 페이지를 버퍼 풀에서 변경한 직후, 커밋 전 |
+> | 기록 내용 | **변경 전** 데이터 (역연산을 위한 이전 버전) | **변경 후** 데이터 (물리적 변경 — "어떤 페이지의 어떤 오프셋에 어떤 값을 썼는가") |
+> | 위치 | undo tablespace (별도 undo 파일 또는 시스템 테이블스페이스) | redo log 파일 (순환 구조, MySQL 8.0.30+에서는 `#innodb_redo` 디렉터리) |
+>
+> 한 줄 요약: undo log는 **"변경 전"을**, redo log는 **"변경 후"를** 기록한다. 하나는 되돌리기 위해, 하나는 다시 적용하기 위해 존재한다.
 
 ### Step 2: 격리 수준과 읽기 부정합 재현
 
