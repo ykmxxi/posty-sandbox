@@ -3,7 +3,6 @@ services:
   mysql:
     image: mysql:8.0
     container_name: posty-sandbox-mysql
-    profiles: ["default"]
     environment:
       MYSQL_ROOT_PASSWORD: root
       MYSQL_DATABASE: posty
