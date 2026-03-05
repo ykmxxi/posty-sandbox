@@ -38,11 +38,29 @@ SELECT * FROM test_myisam;  -- 결과: 1, 2, 3 (부분 삽입!)
 ```
 
 - [ ] 이 차이가 발생하는 이유: InnoDB는 undo log를 통한 롤백을 지원하지만, MyISAM은 트랜잭션을 지원하지 않는다
-- [ ] **내구성(Durability)**: `innodb_flush_log_at_trx_commit` 설정값(0, 1, 2)에 따른 redo log flush 전략 차이 이해 (개념만, 실습은 선택)
+- [ ] **autocommit과 암묵적 트랜잭션**: MySQL의 `autocommit=1`(기본값) 상태에서 각 SQL문이 암묵적 트랜잭션으로 감싸지는 동작 이해
+- [ ] **내구성(Durability)**: WAL(Write-Ahead Logging) 원칙 — 데이터 페이지에 쓰기 전에 redo log에 먼저 기록하는 이유 (순차 I/O vs 랜덤 I/O)
+- [ ] `innodb_flush_log_at_trx_commit` 설정값(0, 1, 2)에 따른 redo log flush 전략: `write()` vs `fsync()` 구분, MySQL 크래시 vs OS 크래시 안전성 차이
+- [ ] **undo log vs redo log 역할 구분**: undo log는 롤백(원자성) + MVCC 읽기용, redo log는 크래시 복구(내구성)용
 
 ### Step 2: 격리 수준과 읽기 부정합 재현
 
 여기가 이 모듈의 핵심이다. **2개의 MySQL 세션(커넥션)**을 동시에 열어서 실험한다.
+
+#### 선행 개념: Consistent Non-locking Read vs Locking Read (Current Read)
+
+이 구분을 먼저 이해해야 격리 수준 실험이 의미 있다.
+
+| 구분 | Consistent Non-locking Read (스냅샷 읽기) | Locking Read (Current Read) |
+|------|------|------|
+| SQL | 일반 `SELECT` | `SELECT ... FOR UPDATE`, `SELECT ... LOCK IN SHARE MODE` |
+| 읽는 데이터 | MVCC 스냅샷 (undo log의 과거 버전) | **현재 시점**의 최신 커밋 데이터 |
+| 락 획득 | 없음 (논블로킹) | 행에 락을 걸음 |
+| 사용 시점 | 일반적인 조회 | UPDATE/DELETE의 WHERE 절, 동시성 제어가 필요한 조회 |
+
+> `UPDATE`, `DELETE`, `INSERT`도 내부적으로 Current Read를 수행한다. WHERE 조건에 매칭되는 행을 찾을 때 항상 최신 커밋 데이터를 기준으로 한다.
+>
+> **이것이 중요한 이유**: Step 2-4에서 일반 SELECT(5건)와 `SELECT ... FOR UPDATE`(6건)의 결과가 다른 것이 바로 이 차이 때문이다.
 
 #### 2-1. Dirty Read 재현 (READ UNCOMMITTED)
 
@@ -84,41 +102,173 @@ SELECT * FROM test_myisam;  -- 결과: 1, 2, 3 (부분 삽입!)
 
 - [ ] SERIALIZABLE에서는 일반 SELECT도 `SELECT ... LOCK IN SHARE MODE`처럼 동작한다
 - [ ] 두 세션이 같은 범위를 읽으면 → 한쪽이 UPDATE를 시도할 때 데드락 또는 대기 발생
+- [ ] 실무에서 SERIALIZABLE을 거의 사용하지 않는 이유: 모든 읽기에 공유 락을 걸어 동시성이 극단적으로 떨어진다
+
+#### 2-6. Lost Update 문제 (Write-Write 충돌)
+
+읽기 부정합(Dirty/Non-Repeatable/Phantom)은 읽기-쓰기 충돌이다. 하지만 쓰기-쓰기 충돌도 중요한 문제다.
+
+- [ ] 세션 A: `SELECT balance FROM account WHERE id = 1` → 1000원
+- [ ] 세션 B: `SELECT balance FROM account WHERE id = 1` → 1000원
+- [ ] 세션 A: `UPDATE account SET balance = 1000 - 300 WHERE id = 1` → COMMIT (700원)
+- [ ] 세션 B: `UPDATE account SET balance = 1000 - 500 WHERE id = 1` → COMMIT (500원)
+- [ ] 최종 결과: 500원 (세션 A의 차감 300원이 유실됨)
+
+**핵심 포인트**: Lost Update는 격리 수준만으로는 방지할 수 없다. `SELECT ... FOR UPDATE`로 배타적 락을 획득하거나, 낙관적 락(버전 컨트롤)을 사용해야 한다. 이 주제는 module-lock에서 더 깊이 다룬다.
+
+#### 격리 수준별 읽기 부정합 요약
+
+| 격리 수준 | Dirty Read | Non-Repeatable Read | Phantom Read |
+|------|------|------|------|
+| READ UNCOMMITTED | O | O | O |
+| READ COMMITTED | X | O | O |
+| REPEATABLE READ | X | X | Δ (InnoDB는 MVCC로 대부분 방지) |
+| SERIALIZABLE | X | X | X |
 
 ### Step 3: MVCC 내부 동작 이해 (개념)
 
-- [ ] **Undo Log**: 행의 이전 버전을 보관. MVCC 읽기 시 트랜잭션 ID를 비교해 자신의 스냅샷에 맞는 버전을 찾아간다
-- [ ] **Read View**: 트랜잭션이 시작될 때 생성되는 "보이는 트랜잭션 목록"
+#### 3-1. InnoDB 히든 컨럼
+
+InnoDB는 모든 행에 사용자에게 보이지 않는 3개의 숨겼진 컨럼을 저장한다:
+
+- [ ] **DB_TRX_ID**: 이 행을 마지막으로 수정한 트랜잭션 ID
+- [ ] **DB_ROLL_PTR**: undo log 레코드를 가리키는 포인터 (이전 버전으로의 링크)
+- [ ] **DB_ROW_ID**: PK가 없는 테이블에서 자동 생성되는 행 ID
+
+> 이 숨겼진 커럼이 MVCC의 물리적 기반이다. DB_TRX_ID로 "누가 수정했는지", DB_ROLL_PTR로 "수정 전 데이터는 무엇인지"를 추적한다.
+
+#### 3-2. Undo Log의 이중 역할
+
+- [ ] **롤백용**: 트랜잭션 ROLLBACK 시 이전 데이터를 복원 (원자성 보장)
+- [ ] **MVCC 읽기용**: 다른 트랜잭션이 수정 중인 행의 이전 버전을 제공 (격리성 보장)
+
+> Step 1에서는 undo log를 "롤백 메커니즘"으로만 다룠다. 여기서는 MVCC에서의 두 번째 역할을 이해한다.
+
+#### 3-3. Read View 가시성 판단 알고리즘
+
+- [ ] **Read View**: 트랜잭션이 생성하는 "보이는 트랜잭션 목록". 핵심 구성요소:
+  - `m_ids`: Read View 생성 시점에 활성 상태(아직 커밋 안 된)인 트랜잭션 ID 목록
+  - `m_low_limit_id`: 현재까지 할당된 가장 큰 trx_id + 1 (이 이상이면 무조건 안 보임)
+  - `m_up_limit_id`: m_ids 중 가장 작은 trx_id (이 미만이면 무조건 보임)
+  - `m_creator_trx_id`: Read View를 생성한 트랜잭션 자신의 ID
+
+- [ ] 행의 DB_TRX_ID를 기준으로 가시성 판단:
+  1. `DB_TRX_ID == m_creator_trx_id` → 자기 자신의 변경 → **보임**
+  2. `DB_TRX_ID < m_up_limit_id` → Read View 생성 전에 이미 커밋된 트랜잭션 → **보임**
+  3. `DB_TRX_ID >= m_low_limit_id` → Read View 생성 후에 시작된 트랜잭션 → **안 보임**
+  4. `m_up_limit_id <= DB_TRX_ID < m_low_limit_id` → m_ids 목록에 있으면 **안 보임**, 없으면 **보임**
+  5. 안 보이면 → DB_ROLL_PTR를 따라 undo log 체인에서 보이는 버전을 찾을 때까지 반복
+
+- [ ] **Read View 생성 시점 차이** (격리 수준 차이의 핵심):
   - REPEATABLE READ: 트랜잭션 최초 SELECT 시 Read View 생성, 이후 동일한 Read View 사용
-  - READ COMMITTED: 매 SELECT마다 새 Read View 생성
-- [ ] **Undo Log 체인**: 같은 행에 여러 트랜잭션이 UPDATE하면 undo log가 체인처럼 연결된다. 긴 트랜잭션이 undo log purge를 막아 디스크 사용량이 늘어나는 이유
+  - READ COMMITTED: 매 SELECT마다 새 Read View 생성 → 그래서 다른 트랜잭션의 커밋이 즉시 보인다
+
+#### 3-4. Undo Log 체인과 긴 트랜잭션 부작용
+
+- [ ] 같은 행에 여러 트랜잭션이 UPDATE하면 undo log가 체인처럼 연결된다
+- [ ] 긴 트랜잭션이 시스템에 미치는 부작용 3가지:
+  1. **undo log purge 지연**: 해당 트랜잭션의 Read View가 참조하는 undo log를 삭제할 수 없음 → 디스크 사용량 증가
+  2. **락 점유 시간 증가**: 트랜잭션이 획득한 락을 커밋/롤백할 때까지 보유 → 다른 트랜잭션 대기/데드락 위험 증가
+  3. **커넥션 점유**: 트랜잭션 동안 DB 커넥션을 반납하지 않음 → HikariCP 풀 고갈 위험
 
 ### Step 4: Spring @Transactional 매핑
 
-- [ ] `@Transactional(isolation = Isolation.READ_COMMITTED)`가 실제로 MySQL에 `SET TRANSACTION ISOLATION LEVEL READ COMMITTED`를 보내는지 p6spy로 확인
-- [ ] `@Transactional(readOnly = true)`가 실제로 하는 일:
-  - JPA: flush mode를 MANUAL로 변경 → dirty checking 스킵
-  - JDBC: `connection.setReadOnly(true)` → MySQL에서 특별한 효과 없음 (DataSource 라우팅에 활용)
-- [ ] `propagation` 실험:
-  - `REQUIRED` (기본값): 기존 트랜잭션이 있으면 참여
-  - `REQUIRES_NEW`: **새 커넥션을 획득해서** 별도 트랜잭션 실행
-    - ⚠️ 주의: 외부 트랜잭션이 커넥션 1개를 점유한 상태에서 내부 `REQUIRES_NEW`가 커넥션 1개를 추가 점유 → HikariCP pool size가 작으면 **데드락** 발생 가능
+#### 4-1. 프록시 메커니즘과 self-invocation 문제
+
+- [ ] `@Transactional`은 **AOP 프록시**를 통해 동작한다. 스프링 컨테이너가 빈을 등록할 때 프록시 객체로 감싸는데, 외부에서 호출해야 프록시를 거치고, **같은 클래스 내부에서 `this.method()` 호출(self-invocation)은 프록시를 우회**하므로 `@Transactional`이 적용되지 않는다.
 
 ```java
-// 위험한 패턴 예시
+// ❌ @Transactional이 동작하지 않는 패턴
+@Service
+public class OrderService {
+    public void createOrder() {
+        this.saveOrderInternal();  // self-invocation → 프록시 우회!
+    }
+
+    @Transactional
+    public void saveOrderInternal() { ... }
+}
+
+// ✅ 해결: 별도 빈으로 분리하여 프록시를 거치게 한다
+```
+
+#### 4-2. 예외 롤백 규칙
+
+- [ ] Spring 기본 동작: **unchecked exception (`RuntimeException`, `Error`)은 롤백**, **checked exception은 커밋**
+- [ ] `@Transactional(rollbackFor = Exception.class)`: checked exception도 롤백하도록 명시적 지정
+- [ ] `@Transactional(noRollbackFor = SomeException.class)`: 특정 예외에서는 롤백하지 않도록 지정
+- [ ] 실무에서 checked exception을 던지는 서비스 메서드에 `rollbackFor`를 빠뜨려 커밋되는 버그 경험해보기 (p6spy로 COMMIT/ROLLBACK 로그 확인)
+
+#### 4-3. 격리 수준 매핑
+
+- [ ] `@Transactional(isolation = Isolation.READ_COMMITTED)`가 실제로 MySQL에 `SET TRANSACTION ISOLATION LEVEL READ COMMITTED`를 보내는지 p6spy로 확인
+
+#### 4-4. readOnly 동작 상세
+
+- [ ] `@Transactional(readOnly = true)`가 실제로 하는 일:
+  - **JPA 계층**: flush mode를 MANUAL로 변경 → dirty checking 스킵 → 스냅샷 복사본을 만들지 않아 **메모리 절약**
+  - **JDBC 계층**: `connection.setReadOnly(true)` → MySQL 5.6.4+에서는 **읽기 전용 트랜잭션 최적화** 적용 (transaction ID 할당 생략, undo log 생성 감소)
+  - **DataSource 라우팅**: 읽기 전용 커넥션을 리플리카 DB로 라우팅하는 데 활용 가능 (예: `AbstractRoutingDataSource`)
+
+#### 4-5. timeout 설정
+
+- [ ] `@Transactional(timeout = 5)`: 5초 이내에 트랜잭션이 완료되지 않으면 롤백
+- [ ] MySQL의 `innodb_lock_wait_timeout`(락 대기 타임아웃, 기본 50초)과는 다른 개념: Spring timeout은 트랜잭션 전체 시간, MySQL timeout은 개별 락 대기 시간
+
+#### 4-6. propagation 실험
+
+- [ ] `REQUIRED` (기본값): 기존 트랜잭션이 있으면 참여. 내부에서 예외 발생 시 외부 트랜잭션도 함께 롤백됨에 주의 (`UnexpectedRollbackException`)
+- [ ] `REQUIRES_NEW`: **새 커넥션을 획득해서** 별도 트랜잭션 실행
+  - ⚠️ 주의: 외부 트랜잭션이 커넥션 1개를 점유한 상태에서 내부 `REQUIRES_NEW`가 커넥션 1개를 추가 점유 → HikariCP pool size가 작으면 **데드락** 발생 가능
+- [ ] `NESTED`: **같은 커넥션** 내에서 Savepoint를 사용. 내부 실패 시 Savepoint까지만 롤백하고, 외부 트랜잭션은 계속 진행 가능 (JPA에서는 flush 시점 때문에 제약이 있음)
+- [ ] `SUPPORTS`, `NOT_SUPPORTED`, `MANDATORY`, `NEVER`: 특수 상황에서 사용, 개념만 이해
+
+```java
+// REQUIRES_NEW 커넥션 데드락 위험 패턴
 @Transactional
 public void outer() {
     // 커넥션 1개 점유
     innerService.inner();  // REQUIRES_NEW → 커넥션 1개 추가 필요
     // pool size가 1이면 여기서 데드락!
 }
+
+// REQUIRED에서의 UnexpectedRollbackException
+@Transactional
+public void outer() {
+    try {
+        innerService.inner();  // REQUIRED + RuntimeException → 트랜잭션 rollback-only 마크
+    } catch (Exception e) {
+        // 예외를 잡아도 이미 rollback-only로 마크된 상태
+    }
+    // outer의 COMMIT 시도 시 UnexpectedRollbackException 발생!
+}
 ```
 
 ### Step 5: 트랜잭션과 JPA 영속성 컨텍스트 관계
 
-- [ ] 트랜잭션 커밋 시 영속성 컨텍스트가 flush되는 시점 확인
-- [ ] `@Transactional`이 없는 상태에서 `save()` 호출 시 auto-commit 모드 동작 확인
-- [ ] OSIV(Open Session In View) 설정이 트랜잭션 범위에 미치는 영향
+#### 5-1. flush 시점 이해
+
+- [ ] `FlushModeType.AUTO` (기본값): 커밋 직전 + **JPQL 실행 전**에 자동 flush. JPQL이 DB를 직접 조회하므로, 영속성 컨텍스트의 변경사항을 먼저 DB에 반영해야 일관성이 유지된다
+- [ ] `readOnly = true` 시 flush mode가 MANUAL로 변경되어 dirty checking과 auto-flush가 발생하지 않음
+- [ ] **flush ≠ commit**: flush는 SQL을 DB에 전송하지만 트랜잭션 내에 있음. 롤백하면 flush된 SQL도 되돌려진다.
+
+#### 5-2. `@Transactional` 없이 repository 호출 시 동작
+
+- [ ] `SimpleJpaRepository`는 클래스 레벨에 `@Transactional(readOnly = true)`가, `save()` 등 쓰기 메서드에는 `@Transactional`이 붙어있다
+- [ ] 따라서 서비스 레이어에 `@Transactional`이 없어도 repository의 각 메서드는 개별적으로 트랜잭션이 적용된다 (단, 여러 메서드를 하나의 트랜잭션으로 묶을 수 없다)
+- [ ] auto-commit 모드에서는 `save()` 후 즉시 커밋되므로, 여러 `save()`를 리열해도 원자성이 보장되지 않음
+
+#### 5-3. OSIV(Open Session In View)
+
+- [ ] Spring Boot의 `spring.jpa.open-in-view` 기본값은 **true** (주의: 기동 시 WARNING 로그 발생)
+- [ ] OSIV=true: `EntityManager`가 컨트롤러 레이어까지 열려있음 → View에서 Lazy Loading 가능. 하지만 **커넥션을 View 렌더링까지 점유**하므로 커넥션 풀 고갈 위험
+- [ ] OSIV=false: 트랜잭션 종료 시 EntityManager도 닫힘 → 트랜잭션 밖에서 Lazy Loading 시 **LazyInitializationException** 발생
+- [ ] 실무 권장: OSIV=false + 필요한 데이터를 서비스 레이어에서 fetch join으로 미리 로딩
+
+#### 5-4. 영속성 컨텍스트 라이프사이클과 트랜잭션
+
+- [ ] 기본적으로 영속성 컨텍스트는 **트랜잭션 범위와 동일**한 생명주기를 가진다 (Transaction-scoped)
+- [ ] 트랜잭션 커밋/롤백 시 영속성 컨텍스트도 함께 종료 → 1차 캐시 소멸
 
 ---
 
@@ -170,6 +320,19 @@ void nonRepeatableRead() throws Exception {
 - `CountDownLatch`로 두 스레드의 실행 순서를 정밀하게 제어
 - 타임아웃을 반드시 설정 (데드락 시 테스트가 영원히 안 끝남)
 
+**격리 수준 설정 방법**:
+
+```java
+// TransactionTemplate으로 격리 수준 지정
+TransactionTemplate txTemplate = new TransactionTemplate(transactionManager);
+txTemplate.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
+
+txTemplate.execute(status -> {
+    // READ COMMITTED로 실행되는 코드
+    return couponRepository.findDiscountById(couponId);
+});
+```
+
 ---
 
 ## 검증 체크리스트
@@ -178,6 +341,13 @@ void nonRepeatableRead() throws Exception {
 - [ ] "InnoDB의 REPEATABLE READ가 표준 SQL의 REPEATABLE READ와 다른 점은?"
 - [ ] "`@Transactional(propagation = REQUIRES_NEW)`가 커넥션 풀에 미치는 영향은?"
 - [ ] "긴 트랜잭션이 시스템에 미치는 부작용 3가지를 설명하라" (undo log 비대화, 락 점유 시간 증가, 커넥션 점유)
+- [ ] "undo log와 redo log의 역할 차이를 설명하라"
+- [ ] "Consistent Non-locking Read와 Locking Read(Current Read)의 차이는? UPDATE는 어느 쪽인가?"
+- [ ] "@Transactional self-invocation 문제가 발생하는 이유와 해결 방법은?"
+- [ ] "Spring에서 checked exception과 unchecked exception의 트랜잭션 롤백 동작 차이는?"
+- [ ] "OSIV=true일 때 발생할 수 있는 커넥션 풀 문제는?"
+- [ ] "flush와 commit의 차이를 설명하라"
+- [ ] "Read View의 가시성 판단 알고리즘을 DB_TRX_ID를 기준으로 설명하라"
 
 ---
 
@@ -185,9 +355,12 @@ void nonRepeatableRead() throws Exception {
 
 - [MySQL 8.0 공식 문서 — Transaction Isolation Levels](https://dev.mysql.com/doc/refman/8.0/en/innodb-transaction-isolation-levels.html)
 - [MySQL 8.0 공식 문서 — InnoDB Multi-Versioning](https://dev.mysql.com/doc/refman/8.0/en/innodb-multi-versioning.html)
+- [MySQL 8.0 공식 문서 — Consistent Nonlocking Reads](https://dev.mysql.com/doc/refman/8.0/en/innodb-consistent-read.html)
+- [MySQL 8.0 공식 문서 — InnoDB Undo Logs](https://dev.mysql.com/doc/refman/8.0/en/innodb-undo-logs.html)
 - [Real MySQL 8.0 (위키북스)](https://product.kyobobook.co.kr/detail/S000001766482) — 5장 트랜잭션과 잠금
 - 10분 테코톡 — 트랜잭션 격리 수준 관련 영상들
 - [Spring @Transactional 공식 문서](https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative.html)
+- [Baeldung — Transaction Propagation and Isolation in Spring @Transactional](https://www.baeldung.com/spring-transactional-propagation-isolation)
 
 ---
 
