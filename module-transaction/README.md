@@ -23,7 +23,7 @@
 
 ### Step 1: ACID 속성 실체 확인
 
-- [ ] **원자성(Atomicity)** — InnoDB vs MyISAM 비교
+- [x] **원자성(Atomicity)** — InnoDB vs MyISAM 비교
 
 ```sql
 -- InnoDB 테이블: 중복 PK 삽입 시 전체 롤백
