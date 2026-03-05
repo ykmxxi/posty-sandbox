@@ -210,6 +210,47 @@ EXPLAIN SELECT * FROM fruit WHERE name LIKE 'ap%';
 
 ---
 
+## 테스트 데이터 준비
+
+학습에 필요한 대용량 테스트 데이터(Coupon 100만 건, Fruit 50만 건)를 생성하고 DB에 적재하는 방법이다.
+
+### 사전 준비
+
+- Python 3.x
+- Docker (MySQL 컨테이너 실행 중)
+
+### 실행 방법
+
+`data/load-data.sh` 스크립트 하나로 venv 생성, CSV 생성, DB 적재, 검증까지 자동으로 수행된다.
+
+```bash
+cd module-index/data
+chmod +x load-data.sh
+./load-data.sh
+```
+
+### 스크립트 동작 순서
+
+1. Python venv 생성 및 numpy 설치
+2. `generate_test_data.py` 실행 → `coupon.csv`, `fruit.csv` 생성
+3. Docker 컨테이너로 CSV 복사
+4. `LOAD DATA INFILE`로 DB에 적재
+5. `verify-distributions.sql`로 데이터 분포 검증
+6. 컨테이너 내 임시 CSV 파일 정리
+
+### 파일 구성
+
+| 파일 | 설명 |
+|------|------|
+| `generate_test_data.py` | CSV 데이터 생성 스크립트 (시드 고정, 재현 가능) |
+| `load-data.sh` | 전체 적재 자동화 스크립트 |
+| `verify-distributions.sql` | 적재 후 데이터 분포 검증 쿼리 |
+| `init-test-data-legacy.sql` | 레거시 데이터 초기화 SQL |
+
+> **참고**: `.csv` 파일과 `.venv/` 디렉토리는 `.gitignore`에 의해 제외된다. 스크립트 실행 시 자동으로 생성되므로 별도로 관리할 필요 없다.
+
+---
+
 ## 학습 자료
 
 - [MySQL 8.0 공식 문서 — InnoDB Index](https://dev.mysql.com/doc/refman/8.0/en/innodb-index-types.html)

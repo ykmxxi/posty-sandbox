@@ -40,7 +40,6 @@ out/
 .DS_Store
 
 ### Test Data ###
-**/data/*.sql
 **/data/*.csv
 **/data/.venv/
 
