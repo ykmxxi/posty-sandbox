@@ -1,19 +1,53 @@
 services:
+  # 기본 MySQL (module-index, module-transaction, module-lock, module-performance)
   mysql:
     image: mysql:8.0
-    platform: linux/arm64
-    container_name: posty-sandbox
+    container_name: posty-sandbox-mysql
+    profiles: ["default"]
     environment:
       MYSQL_ROOT_PASSWORD: root
       MYSQL_DATABASE: posty
     ports:
       - "3306:3306"
-    volumes:
-      - mysql_data:/var/lib/mysql
-      - ./docker/mysql/init:/docker-entrypoint-initdb.d
+    tmpfs:
+      - /var/lib/mysql
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
+      - --performance-schema=ON
 
-volumes:
-  mysql_data:
+  # Replication Source (module-replication)
+  mysql-source:
+    image: mysql:8.0
+    container_name: posty-sandbox-mysql-source
+    profiles: ["replication"]
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: posty
+    ports:
+      - "3307:3306"
+    volumes:
+      - ./docker/mysql-replication/source/my.cnf:/etc/mysql/conf.d/my.cnf
+      - ./docker/mysql-replication/scripts/setup-replication.sh:/docker-entrypoint-initdb.d/setup-replication.sh
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Replication Replica (module-replication)
+  mysql-replica:
+    image: mysql:8.0
+    container_name: posty-sandbox-mysql-replica
+    profiles: ["replication"]
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: posty
+    ports:
+      - "3308:3306"
+    volumes:
+      - ./docker/mysql-replication/replica/my.cnf:/etc/mysql/conf.d/my.cnf
+      - ./docker/mysql-replication/scripts/init-replica.sh:/docker-entrypoint-initdb.d/init-replica.sh
+    depends_on:
+      mysql-source:
+        condition: service_healthy

@@ -30,8 +30,8 @@ posty-sandbox/
 ├── module-performance/      # [4] 성능 개선 학습
 ├── module-replication/      # [5] 복제 지연 학습
 ├── docker/
-│   ├── mysql-single/        # 단일 MySQL (모듈 1~4용)
-│   └── mysql-replication/   # Source-Replica 구성 (모듈 5용)
+│   ├── mysql/               # init.sql (참고용)
+│   └── mysql-replication/   # Source-Replica 설정 파일 (my.cnf, scripts)
 ├── jpa-learning/            # (기존) JPA 학습
 ├── jpa-inheritance/         # (기존) JPA 상속 학습
 └── mvc/                     # (기존) MVC 학습
@@ -45,30 +45,36 @@ posty-sandbox/
 
 ## Docker 실행 방법
 
+루트 `docker-compose.yml` 하나로 모든 인프라를 관리합니다. **profile**로 환경을 선택합니다.
+
 ### 단일 MySQL (모듈 1~4: 인덱스, 트랜잭션, 락, 성능 개선)
 
 ```bash
-cd docker/mysql-single
 docker compose up -d
 
 # MySQL 접속
-docker exec -it posty-mysql mysql -uroot -proot posty
+docker exec -it posty-sandbox-mysql mysql -uroot -proot posty
+
+# 종료
+docker compose down
 ```
 
 ### Source-Replica 복제 환경 (모듈 5: 복제 지연)
 
 ```bash
-cd docker/mysql-replication
-docker compose up -d
+docker compose --profile replication up -d
 
 # Source 접속 (포트 3307)
-docker exec -it posty-mysql-source mysql -uroot -proot posty
+docker exec -it posty-sandbox-mysql-source mysql -uroot -proot posty
 
 # Replica 접속 (포트 3308)
-docker exec -it posty-mysql-replica mysql -uroot -proot posty
+docker exec -it posty-sandbox-mysql-replica mysql -uroot -proot posty
 
 # 복제 상태 확인
-docker exec -it posty-mysql-replica mysql -uroot -proot -e "SHOW REPLICA STATUS\G"
+docker exec -it posty-sandbox-mysql-replica mysql -uroot -proot -e "SHOW REPLICA STATUS\G"
+
+# 종료
+docker compose --profile replication down
 ```
 
 ## 테스트 실행
